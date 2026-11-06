@@ -48,6 +48,7 @@ public class LockService
     private int _highRssiCount;
     private DistanceState _state = DistanceState.Unknown;
     private DateTime _lastLockTime = DateTime.MinValue;
+    private DateTime _lastWakeTime = DateTime.MinValue;
     private short? _lastRssi;
     private string _source = "";
     private bool _pairedEverConnected;
@@ -192,13 +193,20 @@ public class LockService
     {
         if (_highRssiCount < _config.WakeTriggerCount) return;
 
-        if (_state != DistanceState.Near)
+        bool wasNear = _state == DistanceState.Near;
+
+        if (!wasNear)
         {
             _state = DistanceState.Near;
             StateChanged?.Invoke(this, new StateChangedEventArgs(_state, _lastRssi));
             Log?.Invoke(this, new LogEventArgs($"状态变化: 靠近 (RSSI={_lastRssi})"));
         }
 
+        // 只在「远离/待机 → 靠近」的转换瞬间唤醒一次，避免持续在附近时反复发送按键
+        if (wasNear) return;
+        if ((DateTime.Now - _lastWakeTime).TotalSeconds < 10) return;
+
+        _highRssiCount = 0;
         if (_config.AutoWakeEnabled) DoWake();
     }
 
@@ -222,6 +230,8 @@ public class LockService
     private void DoWake()
     {
         if ((DateTime.Now - _lastLockTime).TotalSeconds < _config.LockCooldownSeconds * 2) return;
+
+        _lastWakeTime = DateTime.Now;
 
         try
         {

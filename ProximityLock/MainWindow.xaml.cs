@@ -25,9 +25,22 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             return App.LockService.CurrentState switch
             {
-                LockService.DistanceState.Near => "✅ 设备在附近",
-                LockService.DistanceState.Far => "❌ 设备已远离",
-                _ => "⏳ 等待扫描目标设备..."
+                LockService.DistanceState.Near => "设备在附近",
+                LockService.DistanceState.Far => "设备已远离",
+                _ => "等待扫描目标设备"
+            };
+        }
+    }
+
+    public string CurrentStateLabel
+    {
+        get
+        {
+            return App.LockService.CurrentState switch
+            {
+                LockService.DistanceState.Near => "在范围内",
+                LockService.DistanceState.Far => "超出范围",
+                _ => "待机"
             };
         }
     }
@@ -179,6 +192,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         OnPropertyChanged(nameof(StatusText));
         OnPropertyChanged(nameof(RssiText));
         OnPropertyChanged(nameof(CurrentState));
+        OnPropertyChanged(nameof(CurrentStateLabel));
         OnPropertyChanged(nameof(SelectedDeviceInfo));
     }
 
