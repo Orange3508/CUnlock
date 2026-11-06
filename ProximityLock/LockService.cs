@@ -49,9 +49,11 @@ public class LockService
     private DistanceState _state = DistanceState.Unknown;
     private DateTime _lastLockTime = DateTime.MinValue;
     private short? _lastRssi;
+    private string _source = "";
 
     public DistanceState CurrentState => _state;
     public short? LastRssi => _lastRssi;
+    public string Source => _source;
     public event EventHandler<StateChangedEventArgs>? StateChanged;
     public event EventHandler<LogEventArgs>? Log;
 
@@ -76,28 +78,60 @@ public class LockService
             var address = BluetoothScanner.ParseAddress(_config.TargetDeviceAddress);
             _scanner.TargetAddress = address;
 
-            if (!_scanner.Devices.TryGetValue(address, out var device))
+            // BLE 信号超过 8 秒没刷新就算失效，避免旧的 RSSI 一直留在列表里
+            var fresh = _scanner.GetFreshDevice(address, TimeSpan.FromSeconds(8));
+
+            if (fresh != null)
+            {
+                _lastRssi = fresh.Rssi;
+                _source = "BLE 信号";
+
+                if (fresh.Rssi <= _config.LockThreshold)
+                {
+                    _lowRssiCount++;
+                    _highRssiCount = 0;
+                    CheckLock();
+                }
+                else if (fresh.Rssi >= _config.WakeThreshold)
+                {
+                    _highRssiCount++;
+                    _lowRssiCount = 0;
+                    CheckWake();
+                }
+                return;
+            }
+
+            // BLE 扫不到：如果以前扫到过，说明确实走远了
+            if (_scanner.WasSeenBefore(address))
             {
                 _lastRssi = null;
+                _source = "BLE 信号消失";
                 _lowRssiCount++;
                 _highRssiCount = 0;
                 CheckLock();
                 return;
             }
 
-            _lastRssi = device.Rssi;
+            // 从未在 BLE 出现：用已配对设备的经典蓝牙连接状态判断
+            _scanner.RequestPairedStatus(address);
+            var connected = _scanner.PairedConnected;
 
-            if (device.Rssi <= _config.LockThreshold)
-            {
-                _lowRssiCount++;
-                _highRssiCount = 0;
-                CheckLock();
-            }
-            else if (device.Rssi >= _config.WakeThreshold)
+            if (connected == null) return; // 未知，不做任何判断，避免误锁
+
+            _lastRssi = null;
+            _source = connected == true ? "已配对设备连接中" : "已配对设备已断开";
+
+            if (connected == true)
             {
                 _highRssiCount++;
                 _lowRssiCount = 0;
                 CheckWake();
+            }
+            else
+            {
+                _lowRssiCount++;
+                _highRssiCount = 0;
+                CheckLock();
             }
         }
         catch (Exception ex)

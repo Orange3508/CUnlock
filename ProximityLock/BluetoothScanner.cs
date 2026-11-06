@@ -1,4 +1,3 @@
-using System.IO;
 using Windows.Devices.Bluetooth;
 using Windows.Devices.Bluetooth.Advertisement;
 using Windows.Devices.Enumeration;
@@ -12,30 +11,51 @@ public sealed class BleDevice
     public string Name { get; set; } = "";
     public short Rssi { get; set; }
     public DateTimeOffset LastSeen { get; set; }
+    public bool IsPaired { get; set; }
+
     public string AddressHex => BluetoothScanner.FormatAddress(Address);
 
-    public BleDevice(ulong address) { Address = address; }
-
-    /// <summary>界面显示名：有名字用名字，否则用厂商/地址兜底</summary>
     public string DisplayName =>
         string.IsNullOrWhiteSpace(Name) ? $"未知设备 ({AddressHex})" : Name;
+
+    public BleDevice(ulong address, bool paired = false)
+    {
+        Address = address;
+        IsPaired = paired;
+    }
 }
 
 /// <summary>
-/// 蓝牙扫描服务：扫描周围 BLE 广播包，获取指定设备的 RSSI 与名称
+/// 蓝牙扫描服务：BLE 广播扫描 + Windows 已配对设备枚举
 /// </summary>
 public class BluetoothScanner
 {
+    private const string AepAddressKey = "System.Devices.Aep.DeviceAddress";
+
     private BluetoothLEAdvertisementWatcher? _watcher;
     private readonly Dictionary<ulong, BleDevice> _devices = new();
     private readonly HashSet<ulong> _nameLookupStarted = new();
+    private readonly List<BleDevice> _pairedDevices = new();
     private readonly object _lock = new();
+
+    private DateTime _lastPairedPoll = DateTime.MinValue;
+    private ulong _pairedPollAddress;
+    private bool _pairedBusy;
 
     public event EventHandler<DeviceFoundEventArgs>? DeviceFound;
     public event EventHandler<RssiUpdatedEventArgs>? RssiUpdated;
 
     public ulong? TargetAddress { get; set; }
     public bool IsScanning { get; private set; }
+
+    /// <summary>已配对设备（系统枚举结果，含名称）</summary>
+    public IReadOnlyList<BleDevice> PairedDevices
+    {
+        get { lock (_lock) { return _pairedDevices.ToList(); } }
+    }
+
+    /// <summary>已配对设备的连接状态：true=已连接（在附近），false=断开（已远离），null=未知</summary>
+    public bool? PairedConnected { get; private set; }
 
     public IReadOnlyDictionary<ulong, BleDevice> Devices
     {
@@ -44,45 +64,43 @@ public class BluetoothScanner
 
     public void Start()
     {
-        if (IsScanning) return;
-
-        _watcher = new BluetoothLEAdvertisementWatcher
+        if (!IsScanning)
         {
-            // Active 模式会主动请求扫描响应包，能拿到更多带名称的设备
-            ScanningMode = BluetoothLEScanningMode.Active
-        };
+            _watcher = new BluetoothLEAdvertisementWatcher
+            {
+                // Active 模式会主动请求扫描响应包，能拿到更多带名称的设备
+                ScanningMode = BluetoothLEScanningMode.Active
+            };
 
-        _watcher.Received += OnAdvertisementReceived;
-        _watcher.Stopped += (s, e) => IsScanning = false;
+            _watcher.Received += OnAdvertisementReceived;
+            _watcher.Stopped += (s, e) => IsScanning = false;
 
-        try
-        {
-            _watcher.Start();
-            IsScanning = true;
+            try
+            {
+                _watcher.Start();
+                IsScanning = true;
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"BLE 扫描启动失败: {ex.Message}");
+            }
         }
-        catch (Exception ex)
-        {
-            System.Diagnostics.Debug.WriteLine($"BLE 扫描启动失败: {ex.Message}");
-        }
 
-        // 系统里已配对/已登记的设备有名称，后台同步一次
-        SyncSystemDeviceNames();
+        RefreshPairedDevices();
     }
 
-    /// <summary>
-    /// 从 Windows 设备列表中读取已知设备名称（配对过的手机/手表通常能拿到）
-    /// </summary>
-    private async void SyncSystemDeviceNames()
+    /// <summary>枚举 Windows 中已配对/已连接的蓝牙设备（能拿到真实名称）</summary>
+    public async void RefreshPairedDevices()
     {
         try
         {
-            var selector = BluetoothLEDevice.GetDeviceSelector();
+            var selector = BluetoothDevice.GetDeviceSelectorFromPairingState(true);
             var list = await DeviceInformation.FindAllAsync(selector);
 
-            var map = new Dictionary<ulong, string>();
+            var result = new List<BleDevice>();
             foreach (var info in list)
             {
-                var raw = info.Properties.TryGetValue("System.Devices.Aep.DeviceAddress", out var v)
+                var raw = info.Properties.TryGetValue(AepAddressKey, out var v)
                     ? v?.ToString() ?? ""
                     : "";
                 if (string.IsNullOrWhiteSpace(raw)) continue;
@@ -91,27 +109,63 @@ public class BluetoothScanner
                 try { addr = ParseAddress(raw); }
                 catch { continue; }
 
-                var name = info.Name;
-                if (!string.IsNullOrWhiteSpace(name)) map[addr] = name;
-            }
+                var dev = new BleDevice(addr, paired: true)
+                {
+                    Name = info.Name ?? "",
+                    LastSeen = DateTimeOffset.Now
+                };
 
-            if (map.Count == 0) return;
+                if (!string.IsNullOrWhiteSpace(dev.Name)) result.Add(dev);
+            }
 
             lock (_lock)
             {
-                foreach (var kv in map)
-                {
-                    var dev = _devices.TryGetValue(kv.Key, out var d) ? d : null;
-                    if (dev != null && string.IsNullOrWhiteSpace(dev.Name))
-                    {
-                        dev.Name = kv.Value;
-                    }
-                }
+                _pairedDevices.Clear();
+                _pairedDevices.AddRange(result);
             }
         }
         catch (Exception ex)
         {
-            System.Diagnostics.Debug.WriteLine($"读取系统设备名失败: {ex.Message}");
+            System.Diagnostics.Debug.WriteLine($"枚举已配对设备失败: {ex.Message}");
+        }
+    }
+
+    /// <summary>查询已配对设备的经典蓝牙连接状态（手机离开范围会断开）</summary>
+    public async void RequestPairedStatus(ulong address)
+    {
+        lock (_lock)
+        {
+            if (_pairedBusy) return;
+            if (address == _pairedPollAddress &&
+                (DateTime.Now - _lastPairedPoll).TotalSeconds < 2) return;
+            _pairedBusy = true;
+            _pairedPollAddress = address;
+            _lastPairedPoll = DateTime.Now;
+        }
+
+        try
+        {
+            var task = BluetoothDevice.FromBluetoothAddressAsync(address).AsTask();
+            var done = await Task.WhenAny(task, Task.Delay(TimeSpan.FromSeconds(4)));
+            if (done != task) return;
+
+            var device = await task;
+            if (device == null)
+            {
+                PairedConnected = null;
+                return;
+            }
+
+            PairedConnected = device.ConnectionStatus == BluetoothConnectionStatus.Connected;
+            device.Dispose();
+        }
+        catch
+        {
+            PairedConnected = null;
+        }
+        finally
+        {
+            lock (_lock) { _pairedBusy = false; }
         }
     }
 
@@ -122,6 +176,22 @@ public class BluetoothScanner
             try { _watcher.Stop(); } catch { }
             IsScanning = false;
         }
+    }
+
+    /// <summary>取在指定时间内仍有效的设备记录（过期数据不参与判断）</summary>
+    public BleDevice? GetFreshDevice(ulong address, TimeSpan maxAge)
+    {
+        lock (_lock)
+        {
+            if (!_devices.TryGetValue(address, out var dev)) return null;
+            return (DateTimeOffset.Now - dev.LastSeen) <= maxAge ? dev : null;
+        }
+    }
+
+    /// <summary>该地址是否曾经在 BLE 中出现过</summary>
+    public bool WasSeenBefore(ulong address)
+    {
+        lock (_lock) { return _devices.ContainsKey(address); }
     }
 
     private void OnAdvertisementReceived(BluetoothLEAdvertisementWatcher sender,
@@ -138,7 +208,7 @@ public class BluetoothScanner
                 ? existing
                 : new BleDevice(address);
 
-            // 关键修复：只在拿到非空名称时更新，避免被后续空包覆盖
+            // 只在拿到非空名称时更新，避免被后续空包覆盖
             if (!string.IsNullOrWhiteSpace(advName))
             {
                 dev.Name = advName;
@@ -158,7 +228,6 @@ public class BluetoothScanner
             RssiUpdated?.Invoke(this, new RssiUpdatedEventArgs(rssi));
         }
 
-        // 仍然没名字的设备，尝试通过 GATT 读取一次设备名
         if (string.IsNullOrWhiteSpace(nameForEvent))
         {
             TryResolveNameViaGatt(address);
@@ -166,16 +235,12 @@ public class BluetoothScanner
     }
 
     /// <summary>
-    /// 兜底方案：连接后读 GAP 服务里的设备名称特征值 (0x2A00)
-    /// Apple 设备会拒绝此连接，属正常情况
+    /// 兜底：连接后读 GAP 设备名特征值 (0x2A00)。Apple 设备会拒绝，属正常
     /// </summary>
     private async void TryResolveNameViaGatt(ulong address)
     {
         bool shouldStart;
-        lock (_lock)
-        {
-            shouldStart = _nameLookupStarted.Add(address);
-        }
+        lock (_lock) { shouldStart = _nameLookupStarted.Add(address); }
         if (!shouldStart) return;
 
         try
@@ -183,8 +248,7 @@ public class BluetoothScanner
             var devTask = BluetoothLEDevice.FromBluetoothAddressAsync(address).AsTask();
             var timeout = Task.Delay(TimeSpan.FromSeconds(6));
 
-            var completed = await Task.WhenAny(devTask, timeout);
-            if (completed != devTask) return;
+            if (await Task.WhenAny(devTask, timeout) != devTask) return;
 
             var device = await devTask;
             if (device == null) return;
@@ -206,20 +270,14 @@ public class BluetoothScanner
                 }
             }
         }
-        catch
-        {
-            // 忽略：多数设备不允许未配对连接
-        }
+        catch { }
     }
 
     public static ulong ParseAddress(string mac)
     {
-        // 兼容 "AA:BB:CC:DD:EE:FF" 与 "Bluetooth#BluetoothAA:BB:..." 等形式，取最后 12 位十六进制
+        // 兼容 "AA:BB:CC:DD:EE:FF" 与 "Bluetooth#BluetoothAA:BB:..." 等形式，取末尾 12 位十六进制
         var clean = mac.Replace(":", "").Replace("-", "").Replace(" ", "");
-        if (clean.Length > 12)
-        {
-            clean = clean.Substring(clean.Length - 12);
-        }
+        if (clean.Length > 12) clean = clean.Substring(clean.Length - 12);
         if (clean.Length != 12) throw new ArgumentException("无效的 MAC 地址");
         return Convert.ToUInt64(clean, 16);
     }

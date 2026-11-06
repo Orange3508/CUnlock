@@ -14,6 +14,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private readonly WF.NotifyIcon _trayIcon;
     private readonly DispatcherTimer _uiTimer;
     private readonly DispatcherTimer _listTimer;
+    private int _listTick;
 
     public LockService.DistanceState CurrentState => App.LockService.CurrentState;
     public short? CurrentRssi => App.LockService.LastRssi;
@@ -36,7 +37,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         get
         {
             var rssi = App.LockService.LastRssi;
-            return rssi.HasValue ? $"RSSI: {rssi.Value} dBm" : "未检测到信号";
+            var src = App.LockService.Source;
+            if (rssi.HasValue) return $"RSSI: {rssi.Value} dBm   来源: {src}";
+            if (!string.IsNullOrEmpty(src)) return $"信号来源: {src}";
+            return "未检测到信号";
         }
     }
 
@@ -145,7 +149,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         };
         _listTimer.Tick += (s, e) =>
         {
-            if (IsVisible) RefreshScanList();
+            if (!IsVisible) return;
+
+            _listTick++;
+            // 每 30 秒重新枚举一次已配对设备，配对状态变化能及时反映
+            if (_listTick % 15 == 0) App.Scanner.RefreshPairedDevices();
+
+            RefreshScanList();
         };
         _listTimer.Start();
 
@@ -169,6 +179,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         OnPropertyChanged(nameof(StatusText));
         OnPropertyChanged(nameof(RssiText));
         OnPropertyChanged(nameof(CurrentState));
+        OnPropertyChanged(nameof(SelectedDeviceInfo));
     }
 
     private void OnStateChanged(object? sender, StateChangedEventArgs e)
@@ -205,15 +216,40 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             keepAddress = App.Config.TargetDeviceAddress;
         }
 
-        var devices = App.Scanner.Devices;
+        var merged = new Dictionary<ulong, DeviceItem>();
 
-        DeviceCombo.Items.Clear();
-        foreach (var kv in devices.OrderByDescending(d => d.Value.Rssi).ThenBy(d => d.Value.DisplayName))
+        // 1. 已配对设备优先（系统里有真实名称）
+        foreach (var p in App.Scanner.PairedDevices)
+        {
+            merged[p.Address] = new DeviceItem(p.Address, p.DisplayName, 0, p.AddressHex, true, p.Name);
+        }
+
+        // 2. BLE 扫描到的设备（8 秒内有效），同名地址合并
+        foreach (var kv in App.Scanner.Devices)
         {
             var d = kv.Value;
-            DeviceCombo.Items.Add(new DeviceItem(
-                d.Address, d.DisplayName, d.Rssi, d.AddressHex,
-                string.IsNullOrWhiteSpace(d.Name)));
+            if ((DateTimeOffset.Now - d.LastSeen).TotalSeconds > 8) continue;
+
+            if (merged.TryGetValue(d.Address, out var exist))
+            {
+                exist.Rssi = d.Rssi;
+                if (!string.IsNullOrWhiteSpace(d.Name)) exist.Name = d.Name;
+            }
+            else
+            {
+                merged[d.Address] = new DeviceItem(
+                    d.Address, d.DisplayName, d.Rssi, d.AddressHex,
+                    false, d.Name, string.IsNullOrWhiteSpace(d.Name));
+            }
+        }
+
+        DeviceCombo.Items.Clear();
+        foreach (var item in merged.Values
+                     .OrderByDescending(d => d.IsPaired)
+                     .ThenByDescending(d => d.Rssi)
+                     .ThenBy(d => d.Name))
+        {
+            DeviceCombo.Items.Add(item);
         }
 
         if (!string.IsNullOrEmpty(keepAddress))
@@ -242,6 +278,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private void RefreshScan_Click(object sender, RoutedEventArgs e)
     {
         if (!App.Scanner.IsScanning) App.Scanner.Start();
+        App.Scanner.RefreshPairedDevices();
         RefreshScanList();
         OnLog(this, new LogEventArgs("🔄 刷新蓝牙扫描列表"));
     }
@@ -349,18 +386,34 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 public class DeviceItem
 {
     public ulong Address { get; }
-    public string Name { get; }
-    public short Rssi { get; }
+    public string Name { get; set; }
+    public short Rssi { get; set; }
     public string AddressHex { get; }
+    public bool IsPaired { get; }
     public bool NameUnknown { get; }
-    public string DisplayText =>
-        NameUnknown
-            ? $"(无广播名称)  {AddressHex}   RSSI: {Rssi} dBm"
-            : $"{Name}  [{AddressHex}]   RSSI: {Rssi} dBm";
 
-    public DeviceItem(ulong address, string name, short rssi, string addressHex, bool nameUnknown = false)
+    public string DisplayText
     {
-        Address = address; Name = name; Rssi = rssi; AddressHex = addressHex; NameUnknown = nameUnknown;
+        get
+        {
+            if (NameUnknown)
+                return $"(无广播名称)  {AddressHex}   RSSI: {Rssi} dBm";
+
+            var tag = IsPaired ? "[已配对] " : "";
+            var signal = Rssi == 0 ? "已配对" : $"{Rssi} dBm";
+            return $"{tag}{Name}   RSSI: {signal}";
+        }
+    }
+
+    public DeviceItem(ulong address, string displayName, short rssi, string addressHex,
+                      bool isPaired, string rawName, bool nameUnknown = false)
+    {
+        Address = address;
+        Name = string.IsNullOrWhiteSpace(rawName) ? displayName : rawName;
+        Rssi = rssi;
+        AddressHex = addressHex;
+        IsPaired = isPaired;
+        NameUnknown = nameUnknown;
     }
 
     public override string ToString() => DisplayText;
