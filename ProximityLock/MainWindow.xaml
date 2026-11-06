@@ -71,6 +71,8 @@
                 </Grid>
 
                 <TextBlock FontSize="11" Foreground="#999" Text="{Binding SelectedDeviceInfo}"/>
+                <TextBlock FontSize="11" Foreground="#BBB" TextWrapping="Wrap" Margin="0,6,0,0"
+                           Text="提示：Apple Watch / iPhone 不广播蓝牙名称，这类设备会显示为「无广播名称」，请按信号强度（RSSI，越接近 0 越近）或 MAC 地址识别。"/>
             </StackPanel>
         </Border>
 

@@ -13,6 +13,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 {
     private readonly WF.NotifyIcon _trayIcon;
     private readonly DispatcherTimer _uiTimer;
+    private readonly DispatcherTimer _listTimer;
 
     public LockService.DistanceState CurrentState => App.LockService.CurrentState;
     public short? CurrentRssi => App.LockService.LastRssi;
@@ -137,6 +138,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         _uiTimer.Tick += (s, e) => RefreshBindings();
         _uiTimer.Start();
 
+        // 蓝牙列表自动刷新（窗口可见时每 2 秒重建一次，名称会随扫描补齐）
+        _listTimer = new DispatcherTimer(DispatcherPriority.Background)
+        {
+            Interval = TimeSpan.FromSeconds(2)
+        };
+        _listTimer.Tick += (s, e) =>
+        {
+            if (IsVisible) RefreshScanList();
+        };
+        _listTimer.Start();
+
         _nearIcon = CreateTrayIconIcon(System.Drawing.Color.LimeGreen);
         _farIcon = CreateTrayIconIcon(System.Drawing.Color.OrangeRed);
 
@@ -186,37 +198,45 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void RefreshScanList()
     {
-        DeviceCombo.Items.Clear();
-        var devices = App.Scanner.Devices;
-
-        foreach (var kv in devices.OrderByDescending(d => d.Value.Rssi))
+        // 保留当前选中项，避免刷新后丢失
+        var keepAddress = (DeviceCombo.SelectedItem as DeviceItem)?.AddressHex;
+        if (string.IsNullOrEmpty(keepAddress) && !string.IsNullOrEmpty(App.Config.TargetDeviceAddress))
         {
-            var item = new DeviceItem(
-                kv.Key,
-                string.IsNullOrEmpty(kv.Value.Name) ? "(未知设备)" : kv.Value.Name,
-                kv.Value.Rssi,
-                BluetoothScanner.FormatAddress(kv.Key));
-            DeviceCombo.Items.Add(item);
+            keepAddress = App.Config.TargetDeviceAddress;
         }
 
-        if (App.Config.TargetDeviceAddress != "")
+        var devices = App.Scanner.Devices;
+
+        DeviceCombo.Items.Clear();
+        foreach (var kv in devices.OrderByDescending(d => d.Value.Rssi).ThenBy(d => d.Value.DisplayName))
+        {
+            var d = kv.Value;
+            DeviceCombo.Items.Add(new DeviceItem(
+                d.Address, d.DisplayName, d.Rssi, d.AddressHex,
+                string.IsNullOrWhiteSpace(d.Name)));
+        }
+
+        if (!string.IsNullOrEmpty(keepAddress))
         {
             var match = DeviceCombo.Items.Cast<DeviceItem>()
-                .FirstOrDefault(d => d.AddressHex.Equals(App.Config.TargetDeviceAddress, StringComparison.OrdinalIgnoreCase));
+                .FirstOrDefault(d => d.AddressHex.Equals(keepAddress, StringComparison.OrdinalIgnoreCase));
             if (match != null) DeviceCombo.SelectedItem = match;
         }
     }
 
     private void DeviceCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (DeviceCombo.SelectedItem is DeviceItem item)
-        {
-            App.Config.TargetDeviceAddress = item.AddressHex;
-            App.Config.TargetDeviceName = item.Name;
-            App.Config.Save();
-            OnPropertyChanged(nameof(SelectedDeviceInfo));
-            OnLog(this, new LogEventArgs($"🎯 目标设备: {item.Name} ({item.AddressHex})"));
-        }
+        if (DeviceCombo.SelectedItem is not DeviceItem item) return;
+
+        // 刷新列表会重复触发，地址没变就不重复保存/打日志
+        if (string.Equals(App.Config.TargetDeviceAddress, item.AddressHex, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        App.Config.TargetDeviceAddress = item.AddressHex;
+        App.Config.TargetDeviceName = item.Name;
+        App.Config.Save();
+        OnPropertyChanged(nameof(SelectedDeviceInfo));
+        OnLog(this, new LogEventArgs($"🎯 目标设备: {item.Name} ({item.AddressHex})"));
     }
 
     private void RefreshScan_Click(object sender, RoutedEventArgs e)
@@ -332,11 +352,15 @@ public class DeviceItem
     public string Name { get; }
     public short Rssi { get; }
     public string AddressHex { get; }
-    public string DisplayText => $"{Name}  [{AddressHex}]  RSSI: {Rssi} dBm";
+    public bool NameUnknown { get; }
+    public string DisplayText =>
+        NameUnknown
+            ? $"(无广播名称)  {AddressHex}   RSSI: {Rssi} dBm"
+            : $"{Name}  [{AddressHex}]   RSSI: {Rssi} dBm";
 
-    public DeviceItem(ulong address, string name, short rssi, string addressHex)
+    public DeviceItem(ulong address, string name, short rssi, string addressHex, bool nameUnknown = false)
     {
-        Address = address; Name = name; Rssi = rssi; AddressHex = addressHex;
+        Address = address; Name = name; Rssi = rssi; AddressHex = addressHex; NameUnknown = nameUnknown;
     }
 
     public override string ToString() => DisplayText;
