@@ -50,6 +50,9 @@ public class LockService
     private DateTime _lastLockTime = DateTime.MinValue;
     private short? _lastRssi;
     private string _source = "";
+    private bool _pairedEverConnected;
+    private ushort _targetCompanyId;
+    private DateTime _targetLastSeen = DateTime.MinValue;
 
     public DistanceState CurrentState => _state;
     public short? LastRssi => _lastRssi;
@@ -81,10 +84,34 @@ public class LockService
             // BLE 信号超过 8 秒没刷新就算失效，避免旧的 RSSI 一直留在列表里
             var fresh = _scanner.GetFreshDevice(address, TimeSpan.FromSeconds(8));
 
+            // iPhone 等 Apple 设备会定期轮换随机蓝牙地址，这里自动跟随同厂商最强信号
+            if (fresh == null && _targetCompanyId != 0)
+            {
+                var candidate = _scanner.FindStrongestByCompany(_targetCompanyId, TimeSpan.FromSeconds(6));
+                if (candidate != null && candidate.Address != address)
+                {
+                    var oldDev = _scanner.GetFreshDevice(address, TimeSpan.FromDays(1));
+                    var oldRssi = oldDev?.Rssi ?? -60;
+
+                    // 只有信号强度接近才接管，避免误切到附近的其它同厂商设备
+                    if (Math.Abs(candidate.Rssi - oldRssi) <= 25)
+                    {
+                        _scanner.TargetAddress = candidate.Address;
+                        _config.TargetDeviceAddress = candidate.AddressHex;
+                        _config.Save();
+
+                        address = candidate.Address;
+                        fresh = candidate;
+                        Log?.Invoke(this, new LogEventArgs($"🔄 目标地址已轮换，自动跟随到 {candidate.AddressHex}"));
+                    }
+                }
+            }
+
             if (fresh != null)
             {
                 _lastRssi = fresh.Rssi;
                 _source = "BLE 信号";
+                if (fresh.CompanyId != 0) _targetCompanyId = fresh.CompanyId;
 
                 if (fresh.Rssi <= _config.LockThreshold)
                 {
@@ -117,6 +144,10 @@ public class LockService
             var connected = _scanner.PairedConnected;
 
             if (connected == null) return; // 未知，不做任何判断，避免误锁
+            if (connected == true) _pairedEverConnected = true;
+
+            // 从未连接过就一直是断开状态的，多半是 LE 配对设备（如 iPhone），不能用它判断远近
+            if (connected == false && !_pairedEverConnected) return;
 
             _lastRssi = null;
             _source = connected == true ? "已配对设备连接中" : "已配对设备已断开";

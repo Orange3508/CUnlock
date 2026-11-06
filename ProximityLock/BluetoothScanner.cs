@@ -12,11 +12,23 @@ public sealed class BleDevice
     public short Rssi { get; set; }
     public DateTimeOffset LastSeen { get; set; }
     public bool IsPaired { get; set; }
+    public ushort CompanyId { get; set; }
+    public bool IsRandomAddress { get; set; }
 
     public string AddressHex => BluetoothScanner.FormatAddress(Address);
 
-    public string DisplayName =>
-        string.IsNullOrWhiteSpace(Name) ? $"未知设备 ({AddressHex})" : Name;
+    /// <summary>Apple 设备的厂商 ID</summary>
+    public const ushort AppleCompanyId = 0x004C;
+
+    public string DisplayName
+    {
+        get
+        {
+            if (!string.IsNullOrWhiteSpace(Name)) return Name;
+            if (CompanyId == AppleCompanyId) return $"Apple 设备 ({AddressHex})";
+            return $"未知设备 ({AddressHex})";
+        }
+    }
 
     public BleDevice(ulong address, bool paired = false)
     {
@@ -100,9 +112,12 @@ public class BluetoothScanner
             var result = new List<BleDevice>();
             foreach (var info in list)
             {
+                // 经典蓝牙配对设备的 Aep.DeviceAddress 通常为空，MAC 藏在 Id 里
                 var raw = info.Properties.TryGetValue(AepAddressKey, out var v)
                     ? v?.ToString() ?? ""
                     : "";
+
+                if (string.IsNullOrWhiteSpace(raw)) raw = info.Id ?? "";
                 if (string.IsNullOrWhiteSpace(raw)) continue;
 
                 ulong addr;
@@ -194,12 +209,32 @@ public class BluetoothScanner
         lock (_lock) { return _devices.ContainsKey(address); }
     }
 
+    /// <summary>在指定时间内有效的设备中，找同厂商里信号最强的一个（用于跟随随机地址轮换）</summary>
+    public BleDevice? FindStrongestByCompany(ushort companyId, TimeSpan maxAge)
+    {
+        lock (_lock)
+        {
+            return _devices.Values
+                .Where(d => d.CompanyId == companyId)
+                .Where(d => (DateTimeOffset.Now - d.LastSeen) <= maxAge)
+                .OrderByDescending(d => d.Rssi)
+                .FirstOrDefault();
+        }
+    }
+
     private void OnAdvertisementReceived(BluetoothLEAdvertisementWatcher sender,
                                          BluetoothLEAdvertisementReceivedEventArgs args)
     {
         var address = args.BluetoothAddress;
         var advName = args.Advertisement.LocalName ?? "";
         var rssi = args.RawSignalStrengthInDBm;
+
+        ushort companyId = 0;
+        foreach (var md in args.Advertisement.ManufacturerData)
+        {
+            companyId = (ushort)md.CompanyId;
+            break;
+        }
 
         string nameForEvent;
         lock (_lock)
@@ -208,11 +243,15 @@ public class BluetoothScanner
                 ? existing
                 : new BleDevice(address);
 
-            // 只在拿到非空名称时更新，避免被后续空包覆盖
             if (!string.IsNullOrWhiteSpace(advName))
             {
                 dev.Name = advName;
             }
+
+            if (companyId != 0) dev.CompanyId = companyId;
+
+            try { dev.IsRandomAddress = args.BluetoothAddressType != BluetoothAddressType.Public; }
+            catch { }
 
             dev.Rssi = rssi;
             dev.LastSeen = args.Timestamp;

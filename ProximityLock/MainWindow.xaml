@@ -65,14 +65,16 @@
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
                     <ComboBox Grid.Column="0" x:Name="DeviceCombo" Height="32" SelectionChanged="DeviceCombo_SelectionChanged"/>
                     <Button Grid.Column="1" Content="🔄 刷新扫描" Click="RefreshScan_Click" Margin="8,0,0,0" Width="100" Height="32"/>
+                    <Button Grid.Column="2" Content="🎯 绑定最强者" Click="BindStrongest_Click" Margin="8,0,0,0" Width="110" Height="32"/>
                 </Grid>
 
                 <TextBlock FontSize="11" Foreground="#999" Text="{Binding SelectedDeviceInfo}"/>
                 <TextBlock FontSize="11" Foreground="#BBB" TextWrapping="Wrap" Margin="0,6,0,0"
-                           Text="提示：Apple Watch / iPhone 不广播蓝牙名称，这类设备会显示为「无广播名称」，请按信号强度（RSSI，越接近 0 越近）或 MAC 地址识别。"/>
+                           Text="提示：iPhone / Apple Watch 不广播蓝牙名称且蓝牙地址会定期轮换，列表里显示为「Apple 设备」。站到电脑前点「🎯 绑定最强者」即可自动绑定，之后地址轮换会自动跟随。"/>
             </StackPanel>
         </Border>
 

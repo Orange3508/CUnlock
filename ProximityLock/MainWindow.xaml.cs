@@ -239,7 +239,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             {
                 merged[d.Address] = new DeviceItem(
                     d.Address, d.DisplayName, d.Rssi, d.AddressHex,
-                    false, d.Name, string.IsNullOrWhiteSpace(d.Name));
+                    false, d.DisplayName);
             }
         }
 
@@ -281,6 +281,32 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         App.Scanner.RefreshPairedDevices();
         RefreshScanList();
         OnLog(this, new LogEventArgs("🔄 刷新蓝牙扫描列表"));
+    }
+
+    /// <summary>绑定当前信号最强的设备（站到电脑前点一下，适合 iPhone 这种无名称设备）</summary>
+    private void BindStrongest_Click(object sender, RoutedEventArgs e)
+    {
+        var best = App.Scanner.Devices.Values
+            .Where(d => (DateTimeOffset.Now - d.LastSeen).TotalSeconds <= 8)
+            .OrderByDescending(d => d.Rssi)
+            .FirstOrDefault();
+
+        if (best == null)
+        {
+            OnLog(this, new LogEventArgs("⚠️ 没扫到任何设备，请先点「刷新扫描」"));
+            return;
+        }
+
+        App.Config.TargetDeviceAddress = best.AddressHex;
+        App.Config.TargetDeviceName = best.DisplayName;
+        App.Config.Save();
+
+        RefreshScanList();
+        var match = DeviceCombo.Items.Cast<DeviceItem>()
+            .FirstOrDefault(d => d.AddressHex.Equals(best.AddressHex, StringComparison.OrdinalIgnoreCase));
+        if (match != null) DeviceCombo.SelectedItem = match;
+
+        OnLog(this, new LogEventArgs($"🎯 已绑定最强信号: {best.DisplayName} ({best.Rssi} dBm)"));
     }
 
     private void SaveSettings_Click(object sender, RoutedEventArgs e)
@@ -396,12 +422,9 @@ public class DeviceItem
     {
         get
         {
-            if (NameUnknown)
-                return $"(无广播名称)  {AddressHex}   RSSI: {Rssi} dBm";
-
-            var tag = IsPaired ? "[已配对] " : "";
-            var signal = Rssi == 0 ? "已配对" : $"{Rssi} dBm";
-            return $"{tag}{Name}   RSSI: {signal}";
+            if (IsPaired) return $"[已配对] {Name}   {AddressHex}";
+            if (NameUnknown) return $"(无名称) {AddressHex}   {Rssi} dBm";
+            return $"{Name}   {Rssi} dBm";
         }
     }
 
