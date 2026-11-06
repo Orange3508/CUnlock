@@ -10,6 +10,20 @@ public class LockService
     [DllImport("user32.dll")]
     private static extern bool SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
 
+    [DllImport("kernel32.dll")]
+    private static extern uint SetThreadExecutionState(uint esFlags);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr OpenInputDesktop(uint dwFlags, bool fInherit, uint dwDesiredAccess);
+
+    [DllImport("user32.dll")]
+    private static extern bool CloseDesktop(IntPtr hDesktop);
+
+    private const uint ES_CONTINUOUS = 0x80000000;
+    private const uint ES_SYSTEM_REQUIRED = 0x00000001;
+    private const uint ES_DISPLAY_REQUIRED = 0x00000002;
+    private const uint DESKTOP_SWITCHDESKTOP = 0x0100;
+
     [StructLayout(LayoutKind.Sequential)]
     private struct INPUT
     {
@@ -227,28 +241,41 @@ public class LockService
         }
     }
 
-    private void DoWake()
+    private async void DoWake()
     {
-        if ((DateTime.Now - _lastLockTime).TotalSeconds < _config.LockCooldownSeconds * 2) return;
-
         _lastWakeTime = DateTime.Now;
 
         try
         {
-            var inputs = new INPUT[2];
-            inputs[0].type = INPUT_KEYBOARD;
-            inputs[0].U.ki = new KEYBDINPUT { wVk = VK_SPACE };
+            // 锁屏界面在独立的 secure desktop 上，模拟按键无法送达；
+            // 改用系统电源请求点亮显示器（不会解除锁屏，PIN 仍需手动输入）
+            SetThreadExecutionState(ES_CONTINUOUS | ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED);
 
-            inputs[1].type = INPUT_KEYBOARD;
-            inputs[1].U.ki = new KEYBDINPUT { wVk = VK_SPACE, dwFlags = KEYEVENTF_KEYUP };
+            if (IsWorkstationLocked())
+                Log?.Invoke(this, new LogEventArgs("🌅 已点亮屏幕（Windows 要求输入 PIN 解锁）"));
+            else
+                Log?.Invoke(this, new LogEventArgs("🌅 已点亮屏幕"));
 
-            SendInput(2, inputs, INPUT.Size);
-            Log?.Invoke(this, new LogEventArgs("🌅 已模拟按键唤醒屏幕"));
+            await Task.Delay(3000);
+            SetThreadExecutionState(ES_CONTINUOUS);
         }
         catch (Exception ex)
         {
-            Log?.Invoke(this, new LogEventArgs($"唤醒失败: {ex.Message}"));
+            Log?.Invoke(this, new LogEventArgs($"点亮屏幕失败: {ex.Message}"));
         }
+    }
+
+    /// <summary>当前是否处于锁屏状态</summary>
+    private static bool IsWorkstationLocked()
+    {
+        try
+        {
+            var hdesk = OpenInputDesktop(0, false, DESKTOP_SWITCHDESKTOP);
+            if (hdesk == IntPtr.Zero) return true; // 打不开输入桌面说明在 secure desktop
+            CloseDesktop(hdesk);
+            return false;
+        }
+        catch { return false; }
     }
 }
 
