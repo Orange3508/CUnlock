@@ -15,6 +15,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private readonly DispatcherTimer _uiTimer;
     private readonly DispatcherTimer _listTimer;
     private int _listTick;
+    private bool _slidersReady;
 
     public LockService.DistanceState CurrentState => App.LockService.CurrentState;
     public short? CurrentRssi => App.LockService.LastRssi;
@@ -51,7 +52,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             var rssi = App.LockService.LastRssi;
             var src = App.LockService.Source;
-            if (rssi.HasValue) return $"RSSI: {rssi.Value} dBm   来源: {src}";
+            if (rssi.HasValue)
+                return $"RSSI {rssi.Value} dBm · 约 {AppConfig.RssiToMeters(rssi.Value):0.0} m   来源: {src}";
             if (!string.IsNullOrEmpty(src)) return $"信号来源: {src}";
             return "未检测到信号";
         }
@@ -63,7 +65,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             var cfg = App.Config;
             if (cfg.TargetDeviceAddress == "") return "未选择目标设备";
-            return $"已锁定: {cfg.TargetDeviceName} ({cfg.TargetDeviceAddress})";
+            return $"当前绑定: {cfg.TargetDeviceName} ({cfg.TargetDeviceAddress})";
         }
     }
 
@@ -89,6 +91,30 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         get => App.Config.WakeThreshold;
         set { App.Config.WakeThreshold = value; App.Config.Save(); OnPropertyChanged(); }
+    }
+
+    public double LockDistanceMeters
+    {
+        get => App.Config.LockDistanceMeters;
+        set
+        {
+            App.Config.LockDistanceMeters = value;
+            App.Config.Save();
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(LockThreshold));
+        }
+    }
+
+    public double WakeDistanceMeters
+    {
+        get => App.Config.WakeDistanceMeters;
+        set
+        {
+            App.Config.WakeDistanceMeters = value;
+            App.Config.Save();
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(WakeThreshold));
+        }
     }
 
     public int LockTriggerCount
@@ -184,7 +210,55 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         _trayIcon.DoubleClick += (s, e) => ShowWindow();
         _trayIcon.MouseClick += OnTrayClick;
 
-        Loaded += (s, e) => RefreshScanList();
+        Loaded += (s, e) =>
+        {
+            InitDistanceSliders();
+            RefreshScanList();
+        };
+    }
+
+    /// <summary>把配置里的距离写入滑块（避免双向绑定在初始化时把 0 写回配置）</summary>
+    private void InitDistanceSliders()
+    {
+        _slidersReady = false;
+
+        // 旧版本存的是 RSSI 阈值，换算后可能落在滑块范围外，这种情况下回到默认值
+        var lockD = App.Config.LockDistanceMeters;
+        if (lockD < LockSlider.Minimum || lockD > LockSlider.Maximum) lockD = 4.0;
+        else lockD = Math.Round(lockD * 2) / 2; // 对齐到 0.5 刻度
+
+        var wakeD = App.Config.WakeDistanceMeters;
+        if (wakeD < WakeSlider.Minimum || wakeD > WakeSlider.Maximum) wakeD = 2.0;
+        else wakeD = Math.Round(wakeD * 2) / 2;
+
+        LockSlider.Value = lockD;
+        WakeSlider.Value = wakeD;
+
+        App.Config.LockDistanceMeters = lockD;
+        App.Config.WakeDistanceMeters = wakeD;
+        App.Config.Save();
+
+        _slidersReady = true;
+        OnPropertyChanged(nameof(LockDistanceMeters));
+        OnPropertyChanged(nameof(WakeDistanceMeters));
+    }
+
+    private void DistanceSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (!_slidersReady) return;
+
+        if (ReferenceEquals(sender, LockSlider))
+        {
+            App.Config.LockDistanceMeters = e.NewValue;
+            OnPropertyChanged(nameof(LockDistanceMeters));
+        }
+        else
+        {
+            App.Config.WakeDistanceMeters = e.NewValue;
+            OnPropertyChanged(nameof(WakeDistanceMeters));
+        }
+
+        App.Config.Save();
     }
 
     private void RefreshBindings()
