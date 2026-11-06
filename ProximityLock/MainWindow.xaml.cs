@@ -147,6 +147,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         set { App.Config.AutoStart = value; SetAutoStart(value); OnPropertyChanged(); }
     }
 
+    public bool MonitorOffMode
+    {
+        get => App.Config.MonitorOffMode;
+        set { App.Config.MonitorOffMode = value; App.Config.Save(); OnPropertyChanged(); }
+    }
+
     public event PropertyChangedEventHandler? PropertyChanged;
     protected void OnPropertyChanged(string? name = null) =>
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));

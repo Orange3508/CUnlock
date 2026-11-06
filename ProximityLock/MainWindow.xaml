@@ -444,6 +444,13 @@
                     <StackPanel>
                         <TextBlock Text="参数设置" Style="{StaticResource H2}" Margin="0,0,0,14"/>
 
+                        <CheckBox Content="仅关闭显示器（不锁定，恢复无需 PIN）" Style="{StaticResource Switch}"
+                                  IsChecked="{Binding MonitorOffMode}" Margin="0,0,0,0"/>
+                        <TextBlock Style="{StaticResource Hint}" Margin="0,8,0,14"
+                                   Text="开启后离开只关屏、不锁定。还需在 Windows 设置 → 账户 → 登录选项 →「如果你离开，Windows 何时要求你重新登录」设为「从不」。"/>
+
+                        <CheckBox Content="开机自启动" Style="{StaticResource Switch}" IsChecked="{Binding AutoStart}" Margin="0,0,0,16"/>
+
                         <Grid Margin="0,0,0,4">
                             <TextBlock Text="远离距离" Style="{StaticResource Label}" Margin="0"/>
                             <TextBlock HorizontalAlignment="Right" FontSize="12" Foreground="{StaticResource AccentBrush}"
@@ -478,8 +485,6 @@
                         <TextBox Style="{StaticResource ModernTextBox}"
                                  Text="{Binding LockCooldownSeconds, UpdateSourceTrigger=PropertyChanged}"/>
                         <TextBlock Text="锁屏后该时间内不再重复触发" Style="{StaticResource Hint}" Margin="0,6,0,16"/>
-
-                        <CheckBox Content="开机自启动" Style="{StaticResource Switch}" IsChecked="{Binding AutoStart}" Margin="0,2,0,0"/>
 
                         <Button Content="保存设置" Click="SaveSettings_Click"
                                 Style="{StaticResource PrimaryButton}" Margin="0,18,0,0"/>

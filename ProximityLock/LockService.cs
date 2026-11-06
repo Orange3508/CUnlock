@@ -19,6 +19,13 @@ public class LockService
     [DllImport("user32.dll")]
     private static extern bool CloseDesktop(IntPtr hDesktop);
 
+    [DllImport("user32.dll")]
+    private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+    private static readonly IntPtr HWND_BROADCAST = new IntPtr(0xFFFF);
+    private const int WM_SYSCOMMAND = 0x0112;
+    private const int SC_MONITORPOWER = 0xF170;
+
     private const uint ES_CONTINUOUS = 0x80000000;
     private const uint ES_SYSTEM_REQUIRED = 0x00000001;
     private const uint ES_DISPLAY_REQUIRED = 0x00000002;
@@ -36,7 +43,21 @@ public class LockService
     private struct InputUnion
     {
         [FieldOffset(0)] public KEYBDINPUT ki;
+        [FieldOffset(0)] public MOUSEINPUT mi;
     }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MOUSEINPUT
+    {
+        public int dx;
+        public int dy;
+        public uint mouseData;
+        public uint dwFlags;
+        public uint time;
+        public IntPtr dwExtraInfo;
+    }
+
+    private const int INPUT_MOUSE = 0;
 
     [StructLayout(LayoutKind.Sequential)]
     private struct KEYBDINPUT
@@ -232,13 +253,28 @@ public class LockService
 
         try
         {
-            LockWorkStation();
-            Log?.Invoke(this, new LogEventArgs("🔒 已锁屏"));
+            if (_config.MonitorOffMode)
+            {
+                // 仅关闭显示器，不锁定。配合 Windows「从不要求重新登录」可实现无 PIN 恢复
+                TurnOffMonitor();
+                Log?.Invoke(this, new LogEventArgs("🌙 已关闭显示器（未锁定，无需输入 PIN）"));
+            }
+            else
+            {
+                LockWorkStation();
+                Log?.Invoke(this, new LogEventArgs("🔒 已锁屏"));
+            }
         }
         catch (Exception ex)
         {
             Log?.Invoke(this, new LogEventArgs($"锁屏失败: {ex.Message}"));
         }
+    }
+
+    /// <summary>关闭显示器（不锁定）</summary>
+    private static void TurnOffMonitor()
+    {
+        SendMessage(HWND_BROADCAST, WM_SYSCOMMAND, (IntPtr)SC_MONITORPOWER, (IntPtr)2);
     }
 
     private async void DoWake()
@@ -247,11 +283,22 @@ public class LockService
 
         try
         {
-            // 锁屏界面在独立的 secure desktop 上，模拟按键无法送达；
+            bool locked = IsWorkstationLocked();
+
+            // 未锁屏（仅关屏）时，模拟极小鼠标移动即可点亮显示器
+            if (!locked)
+            {
+                var inputs = new INPUT[1];
+                inputs[0].type = INPUT_MOUSE;
+                inputs[0].U.mi = new MOUSEINPUT { dx = 1, dy = 0 };
+                SendInput(1, inputs, INPUT.Size);
+            }
+
+            // 锁屏界面在独立的 secure desktop 上，模拟输入送不进去；
             // 改用系统电源请求点亮显示器（不会解除锁屏，PIN 仍需手动输入）
             SetThreadExecutionState(ES_CONTINUOUS | ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED);
 
-            if (IsWorkstationLocked())
+            if (locked)
                 Log?.Invoke(this, new LogEventArgs("🌅 已点亮屏幕（Windows 要求输入 PIN 解锁）"));
             else
                 Log?.Invoke(this, new LogEventArgs("🌅 已点亮屏幕"));

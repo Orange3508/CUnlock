@@ -22,6 +22,9 @@ public class AppConfig
     public bool AutoStart { get; set; } = false;
     public int LockCooldownSeconds { get; set; } = 30;
 
+    /// <summary>true = 离开时只关闭显示器（不锁定，恢复时无需 PIN）；false = 真正锁屏</summary>
+    public bool MonitorOffMode { get; set; } = true;
+
     /// <summary>远离距离（米），内部换算成 RSSI 阈值</summary>
     [JsonIgnore]
     public double LockDistanceMeters
