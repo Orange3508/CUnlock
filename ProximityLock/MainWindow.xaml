@@ -1,0 +1,161 @@
+<Window x:Class="ProximityLock.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="ProximityLock - 蓝牙自动锁屏"
+        Height="560" Width="720"
+        WindowStartupLocation="CenterScreen"
+        ResizeMode="CanResize"
+        Background="#F5F5F5">
+
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+    </Window.Resources>
+
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- 顶部：状态面板 -->
+        <Border Grid.Row="0" Background="White" CornerRadius="8" Padding="16" Margin="0,0,0,12">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <Ellipse Grid.Column="0" Width="48" Height="48" Margin="0,0,16,0">
+                    <Ellipse.Style>
+                        <Style TargetType="Ellipse">
+                            <Setter Property="Fill" Value="#CCCCCC"/>
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding CurrentState}" Value="Near">
+                                    <Setter Property="Fill" Value="#4CAF50"/>
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding CurrentState}" Value="Far">
+                                    <Setter Property="Fill" Value="#F44336"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Ellipse.Style>
+                </Ellipse>
+
+                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                    <TextBlock FontSize="18" FontWeight="Bold" Text="{Binding StatusText}"/>
+                    <TextBlock FontSize="12" Foreground="#666" Text="{Binding RssiText}"/>
+                </StackPanel>
+
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                    <CheckBox Content="自动锁屏" IsChecked="{Binding AutoLockEnabled}" Margin="0,0,12,0"/>
+                    <CheckBox Content="自动唤醒" IsChecked="{Binding AutoWakeEnabled}"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- 中间：设备选择 -->
+        <Border Grid.Row="1" Background="White" CornerRadius="8" Padding="16" Margin="0,0,0,12">
+            <StackPanel>
+                <TextBlock FontSize="14" FontWeight="Bold" Margin="0,0,0,8">📡 蓝牙设备</TextBlock>
+
+                <Grid Margin="0,0,0,8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <ComboBox Grid.Column="0" x:Name="DeviceCombo" Height="32" SelectionChanged="DeviceCombo_SelectionChanged"/>
+                    <Button Grid.Column="1" Content="🔄 刷新扫描" Click="RefreshScan_Click" Margin="8,0,0,0" Width="100" Height="32"/>
+                </Grid>
+
+                <TextBlock FontSize="11" Foreground="#999" Text="{Binding SelectedDeviceInfo}"/>
+            </StackPanel>
+        </Border>
+
+        <!-- 下方：参数设置 + 日志 -->
+        <Grid Grid.Row="2">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="320"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- 左侧：参数 -->
+            <Border Grid.Column="0" Background="White" CornerRadius="8" Padding="16" Margin="0,0,8,0">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel>
+                        <TextBlock FontSize="14" FontWeight="Bold" Margin="0,0,0,12">⚙️ 参数设置</TextBlock>
+
+                        <!-- 锁屏阈值 -->
+                        <TextBlock Text="🔒 远离阈值 (RSSI dBm)" FontWeight="SemiBold" Margin="0,0,0,4"/>
+                        <Slider Minimum="-100" Maximum="-40" SmallChange="1" TickFrequency="5"
+                                IsSnapToTickEnabled="True" Height="24"
+                                Value="{Binding LockThreshold}"/>
+                        <TextBlock FontSize="12" Foreground="#666" Margin="0,0,0,12">
+                            <Run Text="当前: "/><Run Text="{Binding LockThreshold, Mode=OneWay}"/><Run Text=" (越负=越远才锁)"/>
+                        </TextBlock>
+
+                        <!-- 唤醒阈值 -->
+                        <TextBlock Text="🌅 靠近阈值 (RSSI dBm)" FontWeight="SemiBold" Margin="0,0,0,4"/>
+                        <Slider Minimum="-100" Maximum="-40" SmallChange="1" TickFrequency="5"
+                                IsSnapToTickEnabled="True" Height="24"
+                                Value="{Binding WakeThreshold}"/>
+                        <TextBlock FontSize="12" Foreground="#666" Margin="0,0,0,12">
+                            <Run Text="当前: "/><Run Text="{Binding WakeThreshold, Mode=OneWay}"/><Run Text=" (越大=越近才唤醒)"/>
+                        </TextBlock>
+
+                        <!-- 触发次数 -->
+                        <TextBlock Text="连续触发次数（防抖）" FontWeight="SemiBold" Margin="0,0,0,4"/>
+                        <TextBox Height="28" Text="{Binding LockTriggerCount, UpdateSourceTrigger=PropertyChanged}"/>
+                        <TextBlock FontSize="11" Foreground="#999" Margin="0,0,0,12">连续 N 次扫描低于阈值才触发</TextBlock>
+
+                        <!-- 扫描间隔 -->
+                        <TextBlock Text="扫描间隔 (毫秒)" FontWeight="SemiBold" Margin="0,0,0,4"/>
+                        <TextBox Height="28" Text="{Binding ScanIntervalMs, UpdateSourceTrigger=PropertyChanged}"/>
+                        <TextBlock FontSize="11" Foreground="#999" Margin="0,0,0,12">建议 1000 ~ 3000</TextBlock>
+
+                        <!-- 冷却时间 -->
+                        <TextBlock Text="锁屏冷却时间 (秒)" FontWeight="SemiBold" Margin="0,0,0,4"/>
+                        <TextBox Height="28" Text="{Binding LockCooldownSeconds, UpdateSourceTrigger=PropertyChanged}"/>
+                        <TextBlock FontSize="11" Foreground="#999" Margin="0,0,0,12">锁屏后多久内不再重复触发</TextBlock>
+
+                        <CheckBox Content="开机自启动" IsChecked="{Binding AutoStart}" Margin="0,4,0,4"/>
+
+                        <Button Content="💾 保存设置" Click="SaveSettings_Click" 
+                                Height="36" Margin="0,12,0,0" Background="#2196F3" Foreground="White" BorderThickness="0">
+                            <Button.Template>
+                                <ControlTemplate TargetType="Button">
+                                    <Border Background="{TemplateBinding Background}" CornerRadius="4" Padding="12,6">
+                                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                    </Border>
+                                </ControlTemplate>
+                            </Button.Template>
+                        </Button>
+                    </StackPanel>
+                </ScrollViewer>
+            </Border>
+
+            <!-- 右侧：日志 -->
+            <Border Grid.Column="1" Background="White" CornerRadius="8" Padding="16" Margin="8,0,0,0">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <TextBlock Grid.Row="0" FontSize="14" FontWeight="Bold" Margin="0,0,0,8">📋 运行日志</TextBlock>
+
+                    <ListBox Grid.Row="1" x:Name="LogList" FontFamily="Consolas" FontSize="11"
+                             ScrollViewer.HorizontalScrollBarVisibility="Auto"/>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <!-- 底部按钮 -->
+        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+            <Button Content="✖ 退出" Click="Exit_Click" Width="80" Height="32" Margin="0,0,8,0"/>
+            <Button Content="— 最小化到托盘" Click="MinimizeToTray_Click" Width="120" Height="32"/>
+        </StackPanel>
+    </Grid>
+</Window>
